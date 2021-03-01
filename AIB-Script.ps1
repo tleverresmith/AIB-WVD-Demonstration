@@ -37,7 +37,7 @@ catch {
 $varPostfix = Get-Date -Format yyyyMMddhhmmss
 
 ## Temporary Resource Group Variables
-$tmpRgRegion = "West US 2"
+$tmpRgRegion = "West US"
 $tmpRgName = "AzWVD-AIB-$varPostFix"
 Write-Output "Temporary Resource Group Name: $tmpRgName"
 Write-Output "Temporary Resource Group Region: $tmpRgRegion"
@@ -108,12 +108,12 @@ $srcPlatform = New-AzImageBuilderSourceObject `
                 -Version $templateVersion
 
 # Stage the distributor object
+$subscriptionID = $AzContext.Subscription.Id
 $disSharedImg = New-AzImageBuilderDistributorObject -ManagedImageDistributor `
                 -ArtifactTag @{} `
                 -ImageID "/subscriptions/$subscriptionID/resourceGroups/$tmpRgName/providers/Microsoft.Compute/images/Image-$varPostfix" `
-                -Location "West US 2" `
+                -Location "West US" `
                 -RunOutputName $templaterunOutputName
-
 
 # Create windows update customzier objects
 $custWindowsUpdate = New-AzImageBuilderCustomizerObject `
@@ -123,8 +123,20 @@ $custWindowsUpdate = New-AzImageBuilderCustomizerObject `
                            -CustomizerName 'WindowsUpdate'
 
 $custRestart = New-AzImageBuilderCustomizerObject `
-                -RestartCustomizer `
-                -CustomizerName 'PostPatchRestart'
+                           -RestartCustomizer `
+                           -CustomizerName 'PostPatchRestart'
+
+$custStageScriptCmd = @("Invoke-RestMethod `"https://raw.githubusercontent.com/tleverresmith/AIB-WVD-Demonstration/main/Customization.ps1`" -Method 'GET' -OutFile (New-Item -Path `"C:\Installers\customize.ps1`" -Force)")
+$custStageScript = New-AzImageBuilderCustomizerObject -PowerShellCustomizer `
+                           -CustomizerName "Stage Customize Image Script" `
+                           -RunElevated $true `
+                           -Inline $custStageScriptCmd
+
+$custRunScriptCmd = @("& C:\\Installers\\Customize.ps1")
+$custRunScript = New-AzImageBuilderCustomizerObject -PowerShellCustomizer `
+                                    -CustomizerName "Run Customize Image Script" `
+                                    -RunElevated $true `
+                                    -Inline $custRunScriptCmd
 
 # Stage the template        
 Write-Output "Submitting the template to Azure"
@@ -135,6 +147,8 @@ New-AzImageBuilderTemplate -ImageTemplateName $templateName `
                            -UserAssignedIdentityId $manIdArmPath `
                            -Location $tmpRgRegion `
                            -Customize @($custWindowsUpdate, `
+                                        $custStageScript, `
+                                        $custRunScript, `
                                         $custRestart) | Out-Null
 
 Write-Output "Verifying the status of the image template"
@@ -165,14 +179,6 @@ if($buildResults.ProvisioningState -ne "Succeeded") {
     throw "Error: Build job failed"
     Write-Output $buildResults | Select-Object *
     Exit 0xDEAD
-}
-
-If($buildResults.ArtifactId -match ".*/versions/(.*)") {
-    $artifactID = $Matches[1]
-    Write-Output "Build Version: $artifactID"
-} else {
-    throw "Unable to detect build version, this is probably not fatal but very suspect"
-    Write-Output $buildResults | Select-Object *
 }
 
 # Clean up the temporary resource group and associated objects
